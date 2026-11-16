@@ -1,0 +1,13 @@
+{
+  "name": "pi-openrouter-floor",
+  "version": "1.0.0",
+  "description": "Registers :floor (cheapest-provider) twins of every agentic OpenRouter model in pi, plus a /floor toggle command",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "author": "Heric Camargo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/herijooj/pi-openrouter-floor.git"
+  },
+  "homepage": "https://github.com/herijooj/pi-openrouter-floor"
+}
