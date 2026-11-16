@@ -7,8 +7,9 @@
 // provider). The list is rebuilt on every pi start, so it stays in sync with
 // OpenRouter automatically.
 //
-// Note: session cost estimates for floor twins use the base model's list
-// price; the actually billed (cheaper) provider may charge less.
+// Cost accounting needs no code here: pi uses the provider-billed cost
+// OpenRouter reports in the stream (usage.cost, surfaced as
+// `totalFromProvider: true`), for floor twins and base models alike.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
