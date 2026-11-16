@@ -32,7 +32,8 @@ Uses your existing OpenRouter credentials — the same ones pi uses:
 
 ## Caveats
 
-- Session cost estimates for floor twins use the base model's list price; the provider actually serving you may bill less — estimates are conservative, not exact.
+- Session cost totals use the **provider-billed cost** OpenRouter reports in the stream (`totalFromProvider: true`), not a catalog estimate — identical accounting for twins and base models.
+
 - Agentic-usable filter mirrors pi-openrouter-advanced-provider's: `tools` parameter required and evidence of reasoning support, unless the id starts with `~` or `openrouter/`.
 - `:floor` changes *provider routing*, not the model — output quality can differ between providers for the same model.
 
