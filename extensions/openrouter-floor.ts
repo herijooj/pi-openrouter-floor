@@ -7,11 +7,8 @@
 // provider). The list is rebuilt on every pi start, so it stays in sync with
 // OpenRouter automatically.
 //
-// Session cost estimates for floor twins start from the base model's list
-// price, but the provider actually serving a :floor request usually bills
-// less. This extension therefore tees the SSE stream for :floor requests,
-// captures the billed `usage.cost` OpenRouter reports, and rewrites the
-// finalized assistant message so pi's session totals reflect real spend.
+// Note: session cost estimates for floor twins use the base model's list
+// price; the actually billed (cheaper) provider may charge less.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
@@ -72,124 +69,7 @@ function resolveApiKey(): string | undefined {
   return undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Billed-cost capture
-//
-// Wraps global fetch once (guarded via Symbol) to observe SSE streams for
-// :floor chat/completions calls: the response body is teed, one copy goes to
-// pi untouched, the other is scanned for `usage.cost` keyed by response id.
-// Never blocks or breaks the real stream; any parse failure is ignored.
-// ---------------------------------------------------------------------------
-
-type Captures = Map<string, Promise<number | undefined>>;
-
-function isFloorRequest(input: unknown, init?: { body?: unknown }): boolean {
-  if (typeof init?.body !== "string") return false;
-  try {
-    const raw = typeof input === "string" ? input : (input as URL).href;
-    const url = new URL(raw);
-    if (url.hostname !== "openrouter.ai" || !url.pathname.endsWith("/chat/completions")) return false;
-    const model = JSON.parse(init.body).model;
-    return typeof model === "string" && model.endsWith(":floor");
-  } catch {
-    return false;
-  }
-}
-
-async function captureBilledCost(body: ReadableStream<Uint8Array>, captures: Captures): Promise<void> {
-  let id: string | undefined;
-  let cost: number | undefined;
-  let resolve!: (cost: number | undefined) => void;
-  const captured = new Promise<number | undefined>((done) => (resolve = done));
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline: number;
-      while ((newline = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (!line.startsWith("data:")) continue;
-        let chunk: any;
-        try {
-          chunk = JSON.parse(line.slice(5).trim());
-        } catch {
-          continue;
-        }
-        if (!id && typeof chunk.id === "string" && chunk.id) {
-          id = chunk.id;
-          captures.set(id, captured);
-          if (captures.size > 200) captures.delete(captures.keys().next().value!);
-        }
-        if (typeof chunk.usage?.cost === "number" && Number.isFinite(chunk.usage.cost) && chunk.usage.cost >= 0) {
-          cost = chunk.usage.cost;
-        }
-      }
-    }
-  } catch {
-    // never interrupt the stream
-  } finally {
-    resolve(cost);
-  }
-}
-
-function wrapFetchForFloorCost(originalFetch: typeof fetch, captures: Captures): typeof fetch {
-  return async (input, init) => {
-    if (!isFloorRequest(input, init as any)) return originalFetch(input as any, init);
-    const response = await originalFetch(input as any, init);
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!response.ok || !response.body || !contentType.includes("text/event-stream")) return response;
-    const [forPi, forCost] = response.body.tee();
-    void captureBilledCost(forCost, captures);
-    return new Response(forPi, { status: response.status, statusText: response.statusText, headers: response.headers });
-  };
-}
-
-const COST_SYMBOL = Symbol.for("pi-openrouter-floor:cost-capture");
-
 export default async function (pi: ExtensionAPI) {
-  // Install the fetch wrapper once per process.
-  const globals = globalThis as any;
-  if (!globals[COST_SYMBOL]) {
-    const captures: Captures = new Map();
-    globals[COST_SYMBOL] = { captures, wrapped: true };
-    globalThis.fetch = wrapFetchForFloorCost(globalThis.fetch, captures);
-  }
-  const costState: { captures: Captures; wrapped: boolean } = globals[COST_SYMBOL];
-
-  const onMessageEnd = pi.on as (event: "message_end", handler: (event: any) => Promise<any>) => void;
-  onMessageEnd("message_end", async (event) => {
-    const message = event?.message;
-    if (message?.role !== "assistant") return;
-    if (message.provider !== "openrouter-floor") return;
-    const responseId: string | undefined = message.responseId;
-    if (!responseId) return;
-    let captured = costState.captures.get(responseId);
-    if (!captured) {
-      // message_end can win the race against the tee coroutine; yield once.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      captured = costState.captures.get(responseId);
-    }
-    if (!captured) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const billed = await Promise.race([
-      captured,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), 250);
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
-    costState.captures.delete(responseId);
-    if (billed === undefined) return;
-    return {
-      message: { ...message, usage: { ...message.usage, cost: { ...message.usage.cost, total: billed } } },
-    };
-  });
-
   pi.registerCommand("floor", {
     description: "Toggle between the active model and its OpenRouter :floor twin (cheapest provider)",
     handler: async (_args, ctx) => {
